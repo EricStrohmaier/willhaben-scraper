@@ -1,4 +1,4 @@
-export const MATCH_CRITERIA = process.env.MATCH_CRITERIA || `
+export const MATCH_CRITERIA = `
 You are evaluating apartment rental listings in Innsbruck, Austria.
 Score each listing from 0-100 based on how well it matches the following criteria:
 

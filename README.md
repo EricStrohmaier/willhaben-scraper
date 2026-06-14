@@ -82,18 +82,18 @@ npm run run-pipeline -- --no-notify # Skip notifications
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Service status, active jobs, registered scrapers |
-| `GET` | `/jobs` | List active scraping jobs |
-| `POST` | `/run` | Trigger full pipeline (fire-and-forget, returns 202) |
-| `POST` | `/scrape` | Run a specific scraper: `{ "scraper": "willhaben", "url": "..." }` |
-| `GET` | `/listings` | All active listings from DB |
-| `GET` | `/matches` | Unnotified matches (score >= 60) |
-| `GET` | `/runs` | Recent pipeline run history |
-| `GET/POST` | `/screenshot` | Take a screenshot of any URL |
-| `POST` | `/cancel` | Cancel a specific job: `{ "url": "..." }` |
-| `POST` | `/cancel-all` | Cancel all active jobs |
+| Method     | Endpoint      | Description                                                        |
+| ---------- | ------------- | ------------------------------------------------------------------ |
+| `GET`      | `/health`     | Service status, active jobs, registered scrapers                   |
+| `GET`      | `/jobs`       | List active scraping jobs                                          |
+| `POST`     | `/run`        | Trigger full pipeline (fire-and-forget, returns 202)               |
+| `POST`     | `/scrape`     | Run a specific scraper: `{ "scraper": "willhaben", "url": "..." }` |
+| `GET`      | `/listings`   | All active listings from DB                                        |
+| `GET`      | `/matches`    | Unnotified matches (score >= 60)                                   |
+| `GET`      | `/runs`       | Recent pipeline run history                                        |
+| `GET/POST` | `/screenshot` | Take a screenshot of any URL                                       |
+| `POST`     | `/cancel`     | Cancel a specific job: `{ "url": "..." }`                          |
+| `POST`     | `/cancel-all` | Cancel all active jobs                                             |
 
 ## Configuration
 
@@ -111,9 +111,6 @@ TURSO_AUTH_TOKEN=your-token
 
 # OpenAI (for AI matching)
 OPENAI_API_KEY=sk-...
-
-# Custom matching criteria (optional)
-MATCH_CRITERIA="Score apartments 0-100 based on: max €800/month, 2+ rooms, near university..."
 
 # Notifications
 NOTIFICATION_WEBHOOK=https://hooks.slack.com/services/...

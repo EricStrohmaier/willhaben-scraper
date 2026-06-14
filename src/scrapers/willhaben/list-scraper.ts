@@ -1,6 +1,7 @@
 import * as cheerio from "cheerio";
 import type { Page } from "puppeteer";
 import { createPage, acceptCookies } from "../../lib/browser.js";
+import { withAbort, delay } from "../../lib/abort.js";
 import type { WillhabenListingPreview } from "./types.js";
 
 async function autoScroll(page: Page): Promise<void> {
@@ -30,29 +31,31 @@ export async function scrapeListPage(
   const page = await createPage();
 
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
-    await page.waitForNetworkIdle({ timeout: 10_000 }).catch(() => {});
+    return await withAbort(async () => {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.waitForNetworkIdle({ timeout: 10_000 }).catch(() => {});
 
-    await acceptCookies(page);
+      await acceptCookies(page);
 
-    await page
-      .waitForSelector("#skip-to-resultlist", { timeout: 10_000 })
-      .catch(() => {});
+      await page
+        .waitForSelector("#skip-to-resultlist", { timeout: 10_000 })
+        .catch(() => {});
 
-    await autoScroll(page);
-    await page.waitForNetworkIdle({ timeout: 5_000 }).catch(() => {});
+      await autoScroll(page);
+      await page.waitForNetworkIdle({ timeout: 5_000 }).catch(() => {});
 
-    const html = await page.content();
-    const $ = cheerio.load(html);
+      const html = await page.content();
+      const $ = cheerio.load(html);
 
-    const listings = parseListings($);
-    const nextPageUrl = parseNextPage($);
+      const listings = parseListings($);
+      const nextPageUrl = parseNextPage($);
 
-    console.log(
-      `[willhaben:list] Found ${listings.length} listings, next page: ${nextPageUrl ? "yes" : "no"}`
-    );
+      console.log(
+        `[willhaben:list] Found ${listings.length} listings, next page: ${nextPageUrl ? "yes" : "no"}`
+      );
 
-    return { listings, nextPageUrl };
+      return { listings, nextPageUrl };
+    }, signal);
   } finally {
     await page.close().catch(() => {});
   }
@@ -102,7 +105,7 @@ export async function scrapeAllListPages(
     url = nextPageUrl;
 
     if (url) {
-      await new Promise((r) => setTimeout(r, 2000));
+      await delay(2000, opts?.signal);
     }
   }
 

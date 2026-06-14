@@ -1,5 +1,6 @@
 import { scrapeAllListPages } from "./list-scraper.js";
 import { scrapeDetailPage } from "./detail-scraper.js";
+import { delay } from "../../lib/abort.js";
 import {
   upsertPreview,
   upsertListing,
@@ -68,7 +69,7 @@ export async function scrapeWillhaben(
     }
 
     if (i < previews.length - 1 && delayMs > 0) {
-      await new Promise((r) => setTimeout(r, delayMs));
+      await delay(delayMs, signal);
     }
   }
 

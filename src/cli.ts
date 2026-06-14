@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { runPipeline } from "./pipeline.js";
 import { migrate } from "./db/migrate.js";
-import { getActiveListings, getRecentRuns, getTotalLlmCost, getLlmCallsForRun } from "./db/queries.js";
+import { getActiveListings, getRecentRuns, getTotalLlmCost, getLlmCallsForRun, finishRun } from "./db/queries.js";
 import { getUnnotifiedMatches } from "./db/queries.js";
 import { closeLocalBrowser } from "./lib/browser.js";
 import { SEARCH_URLS } from "./config/urls.js";
@@ -24,14 +24,21 @@ async function main() {
 
       const ac = new AbortController();
       let aborting = false;
+      let currentRunId: number | null = null;
+      let pipelineFinished = false;
 
       // Keep event loop alive during cleanup so finishRun can complete
       let keepAlive: ReturnType<typeof setInterval> | null = null;
 
-      // Suppress unhandled rejections from Puppeteer when browser dies on SIGINT
+      // Suppress Puppeteer cascading errors when browser dies on SIGINT
       process.on("unhandledRejection", (reason) => {
         if (aborting) return;
         console.error("[cli] Unhandled rejection:", reason);
+      });
+      process.on("uncaughtException", (err) => {
+        if (aborting) return;
+        console.error("[cli] Uncaught exception:", err);
+        process.exit(1);
       });
 
       const onSignal = () => {
@@ -44,7 +51,23 @@ async function main() {
           "\n[cli] Cancelling... waiting for DB cleanup (press again to force exit)"
         );
         ac.abort();
+        closeLocalBrowser().catch(() => {});
         keepAlive = setInterval(() => {}, 1000);
+
+        // Safety: if pipeline doesn't finish in 5s, force DB update and exit
+        setTimeout(async () => {
+          if (pipelineFinished) return;
+          if (currentRunId) {
+            console.log(`[cli] Cleanup timed out, forcing DB update for run #${currentRunId}`);
+            await finishRun(
+              currentRunId,
+              { listingsFound: 0, newListings: 0, matchesFound: 0 },
+              "cancelled",
+              "Cancelled by user (cleanup timeout)"
+            ).catch((e) => console.error(`[cli] Failed: ${e}`));
+          }
+          process.exit(1);
+        }, 5000).unref();
       };
       process.on("SIGINT", onSignal);
       process.on("SIGTERM", onSignal);
@@ -58,7 +81,9 @@ async function main() {
           signal: ac.signal,
           skipMatch: command === "scrape" || skipMatch,
           skipNotify,
+          onRunCreated: (id) => { currentRunId = id; },
         });
+        pipelineFinished = true;
         console.log("\nResult:", JSON.stringify(result, null, 2));
       }
 

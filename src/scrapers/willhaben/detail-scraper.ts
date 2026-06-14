@@ -1,5 +1,6 @@
 import * as cheerio from "cheerio";
 import { createPage, acceptCookies } from "../../lib/browser.js";
+import { withAbort, delay } from "../../lib/abort.js";
 import type { WillhabenListing, WillhabenListingPreview } from "./types.js";
 
 export async function scrapeDetailPage(
@@ -12,18 +13,20 @@ export async function scrapeDetailPage(
   const page = await createPage();
 
   try {
-    await page.goto(preview.url, {
-      waitUntil: "domcontentloaded",
-      timeout: 30_000,
-    });
-    await page.waitForNetworkIdle({ timeout: 10_000 }).catch(() => {});
+    return await withAbort(async () => {
+      await page.goto(preview.url, {
+        waitUntil: "domcontentloaded",
+        timeout: 30_000,
+      });
+      await page.waitForNetworkIdle({ timeout: 10_000 }).catch(() => {});
 
-    await acceptCookies(page);
+      await acceptCookies(page);
 
-    const html = await page.content();
-    const $ = cheerio.load(html);
+      const html = await page.content();
+      const $ = cheerio.load(html);
 
-    return parseDetailPage($, preview);
+      return parseDetailPage($, preview);
+    }, signal);
   } finally {
     await page.close().catch(() => {});
   }
@@ -58,7 +61,7 @@ export async function scrapeDetails(
     );
 
     if (i + concurrency < previews.length && delayMs > 0) {
-      await new Promise((r) => setTimeout(r, delayMs));
+      await delay(delayMs, opts?.signal);
     }
   }
 

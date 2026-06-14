@@ -10,6 +10,7 @@ export interface PipelineOptions {
   signal?: AbortSignal;
   skipMatch?: boolean;
   skipNotify?: boolean;
+  onRunCreated?: (runId: number) => void;
 }
 
 export interface PipelineResult {
@@ -30,6 +31,7 @@ export async function runPipeline(
   await migrate();
 
   const runId = await createRun();
+  opts.onRunCreated?.(runId);
   console.log(`[pipeline] Run #${runId} started`);
 
   const stats = { listingsFound: 0, newListings: 0, matchesFound: 0 };
