@@ -24,6 +24,7 @@ async function main() {
 
       const ac = new AbortController();
       let aborting = false;
+      let abortedAt = 0;
       let currentRunId: number | null = null;
       let pipelineFinished = false;
 
@@ -43,10 +44,12 @@ async function main() {
 
       const onSignal = () => {
         if (aborting) {
+          if (Date.now() - abortedAt < 1500) return;
           console.log("\n[cli] Force exit");
           process.exit(1);
         }
         aborting = true;
+        abortedAt = Date.now();
         console.log(
           "\n[cli] Cancelling... waiting for DB cleanup (press again to force exit)"
         );

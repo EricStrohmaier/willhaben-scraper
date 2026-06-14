@@ -17,6 +17,9 @@ export async function getLocalBrowser(): Promise<Browser> {
 
   localLaunchPromise = puppeteer.launch({
     headless: true,
+    handleSIGINT: false,
+    handleSIGTERM: false,
+    handleSIGHUP: false,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",

@@ -5,6 +5,7 @@ import {
   upsertPreview,
   upsertListing,
   markInactiveExcept,
+  getScrapedListingIds,
 } from "../../db/queries.js";
 import type {
   ScrapeOptions,
@@ -40,18 +41,28 @@ export async function scrapeWillhaben(
     return { listings: [], totalFound: 0, pagesScraped: 0, newListings: 0 };
   }
 
-  console.log(
-    `[willhaben] Scraping ${previews.length} detail pages (saving each to DB immediately)...`
-  );
+  const allIds = previews.map((p) => p.id);
+  const alreadyScraped = await getScrapedListingIds(allIds);
+  const toScrape = previews.filter((p) => !alreadyScraped.has(p.id));
+
+  if (alreadyScraped.size > 0) {
+    console.log(
+      `[willhaben] Skipping ${alreadyScraped.size} already-scraped listings, scraping ${toScrape.length} new detail pages...`
+    );
+  } else {
+    console.log(
+      `[willhaben] Scraping ${toScrape.length} detail pages...`
+    );
+  }
 
   const listings: WillhabenListing[] = [];
   let newCount = 0;
   const delayMs = 2000;
 
-  for (let i = 0; i < previews.length; i++) {
+  for (let i = 0; i < toScrape.length; i++) {
     if (signal?.aborted) break;
 
-    const preview = previews[i];
+    const preview = toScrape[i];
     try {
       const listing = await scrapeDetailPage(preview, signal);
       listings.push(listing);
@@ -60,20 +71,20 @@ export async function scrapeWillhaben(
       if (isNew) newCount++;
 
       console.log(
-        `[willhaben] ${i + 1}/${previews.length} ${isNew ? "NEW" : "UPD"} | €${listing.price ?? "?"} | ${listing.title?.substring(0, 50)}`
+        `[willhaben] ${i + 1}/${toScrape.length} ${isNew ? "NEW" : "UPD"} | €${listing.price ?? "?"} | ${listing.title?.substring(0, 50)}`
       );
     } catch (err) {
       console.error(
-        `[willhaben] ${i + 1}/${previews.length} FAIL | ${preview.title?.substring(0, 50)} | ${err}`
+        `[willhaben] ${i + 1}/${toScrape.length} FAIL | ${preview.title?.substring(0, 50)} | ${err}`
       );
     }
 
-    if (i < previews.length - 1 && delayMs > 0) {
+    if (i < toScrape.length - 1 && delayMs > 0) {
       await delay(delayMs, signal);
     }
   }
 
-  const activeIds = listings.map((l) => l.id);
+  const activeIds = [...listings.map((l) => l.id), ...alreadyScraped];
   await markInactiveExcept(activeIds);
 
   console.log(

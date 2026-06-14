@@ -51,13 +51,22 @@ export async function sendNewMatchNotifications(): Promise<number> {
   // Send via webhook if configured
   const webhookUrl = process.env.NOTIFICATION_WEBHOOK;
   if (webhookUrl) {
+    const isSlack = webhookUrl.includes("hooks.slack.com");
+    const body = isSlack
+      ? { text: `*${payload.title}*\n\n${payload.body}` }
+      : payload;
+
     try {
-      await fetch(webhookUrl, {
+      const res = await fetch(webhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(body),
       });
-      console.log(`[notify] Webhook sent: ${matches.length} matches`);
+      if (!res.ok) {
+        console.error(`[notify] Webhook returned ${res.status}: ${await res.text()}`);
+      } else {
+        console.log(`[notify] Webhook sent: ${matches.length} matches`);
+      }
     } catch (err) {
       console.error(`[notify] Webhook failed: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -4,7 +4,7 @@ import type { WillhabenListing } from "../scrapers/willhaben/types.js";
 import { insertMatch, insertLlmCall } from "../db/queries.js";
 import { MATCH_CRITERIA } from "../config/match-criteria.js";
 
-const BATCH_SIZE = 20;
+const BATCH_SIZE = 10;
 
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   "gpt-4o-mini": { input: 0.15, output: 0.60 },
@@ -193,9 +193,10 @@ function formatListingForLLM(listing: WillhabenListing): string {
     listing.address ? `Address: ${listing.address}` : null,
     listing.district ? `District: ${listing.district}` : null,
     listing.postalCode ? `Postal code: ${listing.postalCode}` : null,
-    listing.description ? `Description: ${listing.description.slice(0, 500)}` : null,
-    listing.landlord ? `Landlord: ${listing.landlord}` : null,
-    listing.landlordType ? `Type: ${listing.landlordType}` : null,
+    listing.description ? `Description: ${listing.description}` : null,
+    listing.locationDescription ? `Location: ${listing.locationDescription}` : null,
+    listing.otherDescription ? `Other: ${listing.otherDescription}` : null,
+    listing.landlordType ? `Landlord type: ${listing.landlordType}` : null,
     Object.keys(listing.attributes).length > 0
       ? `Attributes:\n${Object.entries(listing.attributes).map(([k, v]) => `  ${k}: ${v}`).join("\n")}`
       : null,

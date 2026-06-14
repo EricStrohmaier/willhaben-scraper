@@ -145,6 +145,29 @@ export async function getNewListingsSince(since: string) {
   return result.rows;
 }
 
+export async function getScrapedListingIds(ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const db = getDb();
+  const placeholders = ids.map(() => "?").join(",");
+  const result = await db.execute({
+    sql: `SELECT id FROM listings WHERE id IN (${placeholders}) AND attributes IS NOT NULL`,
+    args: ids,
+  });
+  return new Set(result.rows.map((r) => String(r.id)));
+}
+
+export async function getUnmatchedListings(criteriaHash: string) {
+  const db = getDb();
+  const result = await db.execute({
+    sql: `SELECT * FROM listings
+     WHERE is_active = 1 AND attributes IS NOT NULL
+       AND id NOT IN (SELECT listing_id FROM matches WHERE criteria_hash = ?)
+     ORDER BY first_seen_at DESC`,
+    args: [criteriaHash],
+  });
+  return result.rows;
+}
+
 // ─── Matches ───────────────────────────────────────────────────────────────
 
 export async function insertMatch(

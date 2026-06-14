@@ -1,7 +1,8 @@
 import { migrate } from "./db/migrate.js";
-import { createRun, finishRun, getNewListingsSince } from "./db/queries.js";
+import { createRun, finishRun, getUnmatchedListings } from "./db/queries.js";
 import { scrapeWillhaben } from "./scrapers/willhaben/index.js";
-import { matchListings, hasOpenAI } from "./lib/matcher.js";
+import type { WillhabenListing } from "./scrapers/willhaben/types.js";
+import { matchListings, hasOpenAI, getCriteriaHash } from "./lib/matcher.js";
 import { sendNewMatchNotifications } from "./lib/notify.js";
 
 export interface PipelineOptions {
@@ -51,19 +52,43 @@ export async function runPipeline(
     if (opts.signal?.aborted) {
       status = "cancelled";
       errorMsg = "Cancelled by user";
-    } else if (
-      !opts.skipMatch &&
-      hasOpenAI() &&
-      scrapeResult.newListings > 0
-    ) {
-      const runStartIso = new Date(start).toISOString();
-      const newRows = await getNewListingsSince(runStartIso);
-      const newIds = new Set(newRows.map((r) => String(r.id)));
-      const toMatch = scrapeResult.listings.filter((l) => newIds.has(l.id));
+    } else if (!opts.skipMatch && hasOpenAI()) {
+      const unmatchedRows = await getUnmatchedListings(getCriteriaHash());
+      const toMatch: WillhabenListing[] = unmatchedRows.map((r) => ({
+        id: String(r.id),
+        url: String(r.url),
+        title: String(r.title ?? ""),
+        price: r.price != null ? Number(r.price) : null,
+        priceText: r.price_text != null ? String(r.price_text) : null,
+        sizeM2: r.size_m2 != null ? Number(r.size_m2) : null,
+        rooms: r.rooms != null ? Number(r.rooms) : null,
+        address: r.address != null ? String(r.address) : null,
+        district: r.district != null ? String(r.district) : null,
+        imageUrl: null,
+        postalCode: r.postal_code != null ? String(r.postal_code) : null,
+        fullAddress: r.full_address != null ? String(r.full_address) : null,
+        description: r.description != null ? String(r.description) : null,
+        locationDescription: r.location_description != null ? String(r.location_description) : null,
+        otherDescription: r.other_description != null ? String(r.other_description) : null,
+        attributes: r.attributes ? JSON.parse(String(r.attributes)) : {},
+        equipment: r.equipment ? JSON.parse(String(r.equipment)) : {},
+        priceLabel: r.price_label != null ? String(r.price_label) : null,
+        deposit: r.deposit != null ? Number(r.deposit) : null,
+        depositText: r.deposit_text != null ? String(r.deposit_text) : null,
+        priceInfo: r.price_info ? JSON.parse(String(r.price_info)) : {},
+        images: r.images ? JSON.parse(String(r.images)) : [],
+        landlord: r.landlord != null ? String(r.landlord) : null,
+        landlordType: r.landlord_type != null ? String(r.landlord_type) : null,
+        contactInfo: r.contact_info != null ? String(r.contact_info) : null,
+        lastModified: r.last_modified != null ? String(r.last_modified) : null,
+        willhabenCode: r.willhaben_code != null ? String(r.willhaben_code) : null,
+        heatingInfo: r.heating_info != null ? String(r.heating_info) : null,
+        additionalInfoUrls: r.additional_info_urls ? JSON.parse(String(r.additional_info_urls)) : [],
+      }));
 
       if (toMatch.length > 0) {
         console.log(
-          `[pipeline] Matching ${toMatch.length} new listings with OpenAI...`
+          `[pipeline] Matching ${toMatch.length} unmatched listings with OpenAI...`
         );
         const results = await matchListings(toMatch, {
           signal: opts.signal,
