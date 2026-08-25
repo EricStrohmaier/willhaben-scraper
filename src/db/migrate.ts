@@ -1,4 +1,5 @@
 import { getDb } from "./turso.js";
+import { getEnabledJobs } from "../config/jobs.js";
 
 const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS listings (
@@ -66,19 +67,27 @@ const MIGRATIONS = [
 ];
 
 const ALTER_COLUMNS = [
-  { column: "full_address", type: "TEXT" },
-  { column: "location_description", type: "TEXT" },
-  { column: "other_description", type: "TEXT" },
-  { column: "equipment", type: "TEXT" },
-  { column: "price_label", type: "TEXT" },
-  { column: "deposit", type: "REAL" },
-  { column: "deposit_text", type: "TEXT" },
-  { column: "price_info", type: "TEXT" },
-  { column: "landlord_type", type: "TEXT" },
-  { column: "last_modified", type: "TEXT" },
-  { column: "willhaben_code", type: "TEXT" },
-  { column: "heating_info", type: "TEXT" },
-  { column: "additional_info_urls", type: "TEXT" },
+  { table: "listings", column: "full_address", type: "TEXT" },
+  { table: "listings", column: "location_description", type: "TEXT" },
+  { table: "listings", column: "other_description", type: "TEXT" },
+  { table: "listings", column: "equipment", type: "TEXT" },
+  { table: "listings", column: "price_label", type: "TEXT" },
+  { table: "listings", column: "deposit", type: "REAL" },
+  { table: "listings", column: "deposit_text", type: "TEXT" },
+  { table: "listings", column: "price_info", type: "TEXT" },
+  { table: "listings", column: "landlord_type", type: "TEXT" },
+  { table: "listings", column: "last_modified", type: "TEXT" },
+  { table: "listings", column: "willhaben_code", type: "TEXT" },
+  { table: "listings", column: "heating_info", type: "TEXT" },
+  { table: "listings", column: "additional_info_urls", type: "TEXT" },
+  // Multi-job support: every listing and run belongs to exactly one search job.
+  { table: "listings", column: "job_id", type: "TEXT" },
+  { table: "runs", column: "job_id", type: "TEXT" },
+];
+
+const POST_MIGRATIONS = [
+  `CREATE INDEX IF NOT EXISTS idx_listings_job ON listings(job_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_runs_job ON runs(job_id)`,
 ];
 
 export async function migrate() {
@@ -88,13 +97,42 @@ export async function migrate() {
     await db.execute(sql);
   }
 
-  for (const { column, type } of ALTER_COLUMNS) {
+  for (const { table, column, type } of ALTER_COLUMNS) {
     await db
-      .execute(`ALTER TABLE listings ADD COLUMN ${column} ${type}`)
+      .execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
       .catch(() => {});
   }
 
+  for (const sql of POST_MIGRATIONS) {
+    await db.execute(sql);
+  }
+
+  await backfillJobId(db);
+
   console.log("[db] Migrations applied");
+}
+
+/**
+ * Rows created before multi-job support have job_id = NULL. Left alone they'd
+ * never match a job-scoped query, so they would stay active forever and never
+ * be re-matched. Attribute them to the first enabled job (override with
+ * LEGACY_JOB_ID). Idempotent: a fresh database has no NULL rows to touch.
+ */
+async function backfillJobId(db: ReturnType<typeof getDb>) {
+  const legacyJobId = process.env.LEGACY_JOB_ID || getEnabledJobs()[0]?.id;
+  if (!legacyJobId) return;
+
+  for (const table of ["listings", "runs"]) {
+    const result = await db.execute({
+      sql: `UPDATE ${table} SET job_id = ? WHERE job_id IS NULL`,
+      args: [legacyJobId],
+    });
+    if (result.rowsAffected > 0) {
+      console.log(
+        `[db] Backfilled ${result.rowsAffected} ${table} row(s) to job "${legacyJobId}"`
+      );
+    }
+  }
 }
 
 const isDirectRun =

@@ -7,7 +7,8 @@ import type {
 // ─── Listings ──────────────────────────────────────────────────────────────
 
 export async function upsertPreview(
-  preview: WillhabenListingPreview
+  preview: WillhabenListingPreview,
+  jobId: string
 ): Promise<boolean> {
   const db = getDb();
   const now = new Date().toISOString();
@@ -18,14 +19,18 @@ export async function upsertPreview(
   });
 
   if (existing.rows.length > 0) {
+    // COALESCE, not assignment: if a listing shows up in two jobs' searches,
+    // the first job to see it keeps ownership. Reassigning would make the two
+    // jobs fight over is_active every run.
     await db.execute({
       sql: `UPDATE listings SET
         title = ?, price = ?, price_text = ?, size_m2 = ?, rooms = ?,
-        address = ?, district = ?, last_seen_at = ?, is_active = 1
+        address = ?, district = ?, last_seen_at = ?, is_active = 1,
+        job_id = COALESCE(job_id, ?)
         WHERE id = ?`,
       args: [
         preview.title, preview.price, preview.priceText, preview.sizeM2,
-        preview.rooms, preview.address, preview.district, now, preview.id,
+        preview.rooms, preview.address, preview.district, now, jobId, preview.id,
       ],
     });
     return false;
@@ -33,18 +38,21 @@ export async function upsertPreview(
 
   await db.execute({
     sql: `INSERT INTO listings (id, url, title, price, price_text, size_m2, rooms,
-      address, district, first_seen_at, last_seen_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      address, district, job_id, first_seen_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       preview.id, preview.url, preview.title, preview.price, preview.priceText,
-      preview.sizeM2, preview.rooms, preview.address, preview.district,
+      preview.sizeM2, preview.rooms, preview.address, preview.district, jobId,
       now, now,
     ],
   });
   return true;
 }
 
-export async function upsertListing(listing: WillhabenListing): Promise<boolean> {
+export async function upsertListing(
+  listing: WillhabenListing,
+  jobId: string
+): Promise<boolean> {
   const db = getDb();
   const now = new Date().toISOString();
 
@@ -64,7 +72,8 @@ export async function upsertListing(listing: WillhabenListing): Promise<boolean>
         images = ?, landlord = ?, landlord_type = ?, contact_info = ?,
         last_modified = ?, willhaben_code = ?, heating_info = ?,
         additional_info_urls = ?,
-        last_seen_at = ?, is_active = 1
+        last_seen_at = ?, is_active = 1,
+        job_id = COALESCE(job_id, ?)
         WHERE id = ?`,
       args: [
         listing.title, listing.price, listing.priceText, listing.sizeM2,
@@ -78,7 +87,7 @@ export async function upsertListing(listing: WillhabenListing): Promise<boolean>
         listing.contactInfo,
         listing.lastModified, listing.willhabenCode, listing.heatingInfo,
         JSON.stringify(listing.additionalInfoUrls),
-        now, listing.id,
+        now, jobId, listing.id,
       ],
     });
     return false;
@@ -93,9 +102,9 @@ export async function upsertListing(listing: WillhabenListing): Promise<boolean>
       price_label, deposit, deposit_text, price_info,
       images, landlord, landlord_type, contact_info,
       last_modified, willhaben_code, heating_info,
-      additional_info_urls,
+      additional_info_urls, job_id,
       first_seen_at, last_seen_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     args: [
       listing.id, listing.url, listing.title, listing.price, listing.priceText,
       listing.sizeM2, listing.rooms, listing.address, listing.district,
@@ -107,26 +116,41 @@ export async function upsertListing(listing: WillhabenListing): Promise<boolean>
       JSON.stringify(listing.images), listing.landlord, listing.landlordType,
       listing.contactInfo,
       listing.lastModified, listing.willhabenCode, listing.heatingInfo,
-      JSON.stringify(listing.additionalInfoUrls),
+      JSON.stringify(listing.additionalInfoUrls), jobId,
       now, now,
     ],
   });
   return true;
 }
 
-export async function markInactiveExcept(activeIds: string[]) {
+/**
+ * Deactivate listings belonging to `jobId` that were not seen in this run.
+ * MUST stay scoped to the job — unscoped, each job would deactivate every other
+ * job's listings on every run.
+ */
+export async function markInactiveExcept(activeIds: string[], jobId: string) {
   if (activeIds.length === 0) return;
   const db = getDb();
   const placeholders = activeIds.map(() => "?").join(",");
   await db.execute({
-    sql: `UPDATE listings SET is_active = 0 WHERE is_active = 1 AND id NOT IN (${placeholders})`,
-    args: activeIds,
+    sql: `UPDATE listings SET is_active = 0
+      WHERE is_active = 1 AND job_id = ? AND id NOT IN (${placeholders})`,
+    args: [jobId, ...activeIds],
   });
 }
 
-export async function getActiveListings() {
+export async function getActiveListings(jobId?: string) {
   const db = getDb();
-  const result = await db.execute("SELECT * FROM listings WHERE is_active = 1 ORDER BY first_seen_at DESC");
+  if (jobId) {
+    const result = await db.execute({
+      sql: "SELECT * FROM listings WHERE is_active = 1 AND job_id = ? ORDER BY first_seen_at DESC",
+      args: [jobId],
+    });
+    return result.rows;
+  }
+  const result = await db.execute(
+    "SELECT * FROM listings WHERE is_active = 1 ORDER BY first_seen_at DESC"
+  );
   return result.rows;
 }
 
@@ -156,14 +180,19 @@ export async function getScrapedListingIds(ids: string[]): Promise<Set<string>> 
   return new Set(result.rows.map((r) => String(r.id)));
 }
 
-export async function getUnmatchedListings(criteriaHash: string) {
+/**
+ * Listings for one job that have not been scored under the given criteria.
+ * Scoped to the job so a job never spends tokens scoring another city's
+ * listings against its own criteria.
+ */
+export async function getUnmatchedListings(criteriaHash: string, jobId: string) {
   const db = getDb();
   const result = await db.execute({
     sql: `SELECT * FROM listings
-     WHERE is_active = 1 AND attributes IS NOT NULL
+     WHERE is_active = 1 AND attributes IS NOT NULL AND job_id = ?
        AND id NOT IN (SELECT listing_id FROM matches WHERE criteria_hash = ?)
      ORDER BY first_seen_at DESC`,
-    args: [criteriaHash],
+    args: [jobId, criteriaHash],
   });
   return result.rows;
 }
@@ -187,10 +216,10 @@ export async function insertMatch(
 export async function getUnnotifiedMatches() {
   const db = getDb();
   const result = await db.execute(
-    `SELECT m.*, l.title, l.url, l.price, l.price_text, l.size_m2, l.rooms, l.address, l.district
+    `SELECT m.*, l.title, l.url, l.price, l.price_text, l.size_m2, l.rooms, l.address, l.district, l.job_id
      FROM matches m JOIN listings l ON m.listing_id = l.id
      WHERE m.notified = 0 AND m.score >= 60
-     ORDER BY m.score DESC`
+     ORDER BY l.job_id, m.score DESC`
   );
   return result.rows;
 }
@@ -261,11 +290,11 @@ export async function getTotalLlmCost() {
 
 // ─── Runs ──────────────────────────────────────────────────────────────────
 
-export async function createRun(): Promise<number> {
+export async function createRun(jobId: string): Promise<number> {
   const db = getDb();
   const result = await db.execute({
-    sql: "INSERT INTO runs (started_at) VALUES (?)",
-    args: [new Date().toISOString()],
+    sql: "INSERT INTO runs (started_at, job_id) VALUES (?, ?)",
+    args: [new Date().toISOString(), jobId],
   });
   return Number(result.lastInsertRowid);
 }
@@ -292,8 +321,15 @@ export async function finishRun(
   });
 }
 
-export async function getRecentRuns(limit = 10) {
+export async function getRecentRuns(limit = 10, jobId?: string) {
   const db = getDb();
+  if (jobId) {
+    const result = await db.execute({
+      sql: "SELECT * FROM runs WHERE job_id = ? ORDER BY id DESC LIMIT ?",
+      args: [jobId, limit],
+    });
+    return result.rows;
+  }
   const result = await db.execute({
     sql: "SELECT * FROM runs ORDER BY id DESC LIMIT ?",
     args: [limit],

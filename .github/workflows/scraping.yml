@@ -4,11 +4,16 @@ on:
   schedule:
     - cron: "0 7 * * *"
   workflow_dispatch:
+    inputs:
+      job:
+        description: "Run a single job by id (blank = all enabled jobs)"
+        required: false
+        default: ""
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout code
@@ -17,7 +22,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: "npm"
 
       - name: Install dependencies
@@ -32,4 +37,9 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           NOTIFICATION_WEBHOOK: ${{ secrets.NOTIFICATION_WEBHOOK }}
-        run: npx tsx src/cli.ts run
+        run: |
+          if [ -n "${{ inputs.job }}" ]; then
+            npx tsx src/cli.ts run --job=${{ inputs.job }}
+          else
+            npx tsx src/cli.ts run
+          fi

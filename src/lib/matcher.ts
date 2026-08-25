@@ -2,7 +2,6 @@ import OpenAI from "openai";
 import { createHash } from "crypto";
 import type { WillhabenListing } from "../scrapers/willhaben/types.js";
 import { insertMatch, insertLlmCall } from "../db/queries.js";
-import { MATCH_CRITERIA } from "../config/match-criteria.js";
 
 const BATCH_SIZE = 10;
 
@@ -28,12 +27,12 @@ export function hasOpenAI(): boolean {
   return !!process.env.OPENAI_API_KEY;
 }
 
-export function getCriteria(): string {
-  return MATCH_CRITERIA;
-}
-
-export function getCriteriaHash(): string {
-  return createHash("sha256").update(getCriteria()).digest("hex").slice(0, 16);
+/**
+ * Identifies the exact criteria a listing was scored under. Changing a job's
+ * criteria changes this hash, which makes its listings eligible for re-scoring.
+ */
+export function getCriteriaHash(criteria: string): string {
+  return createHash("sha256").update(criteria).digest("hex").slice(0, 16);
 }
 
 function getModel(): string {
@@ -54,10 +53,10 @@ export interface MatchResult {
 
 async function matchBatch(
   listings: WillhabenListing[],
+  criteria: string,
   runId: number | null,
-): Promise<MatchResult[]> {
+): Promise<{ results: MatchResult[]; costUsd: number }> {
   const client = getOpenAI();
-  const criteria = getCriteria();
   const model = getModel();
 
   const listingsText = listings
@@ -115,32 +114,44 @@ Return one entry per listing, in the same order.`;
     parsed = JSON.parse(content);
   } catch {
     console.error("[matcher] Failed to parse LLM response");
-    return listings.map((l) => ({
-      listingId: l.id,
-      score: 0,
-      reasoning: "Failed to parse LLM response",
-    }));
+    return {
+      costUsd,
+      results: listings.map((l) => ({
+        listingId: l.id,
+        score: 0,
+        reasoning: "Failed to parse LLM response",
+      })),
+    };
   }
 
   const resultMap = new Map(
     (parsed.results ?? []).map((r) => [String(r.id), r])
   );
 
-  return listings.map((l) => {
-    const r = resultMap.get(l.id);
-    return {
-      listingId: l.id,
-      score: r?.score ?? 0,
-      reasoning: r?.reasoning ?? "No result from LLM",
-    };
-  });
+  return {
+    costUsd,
+    results: listings.map((l) => {
+      const r = resultMap.get(l.id);
+      return {
+        listingId: l.id,
+        score: r?.score ?? 0,
+        reasoning: r?.reasoning ?? "No result from LLM",
+      };
+    }),
+  };
 }
 
 export async function matchListings(
   listings: WillhabenListing[],
-  opts?: { minScore?: number; signal?: AbortSignal; runId?: number }
+  opts: {
+    criteria: string;
+    minScore?: number;
+    signal?: AbortSignal;
+    runId?: number;
+  }
 ): Promise<MatchResult[]> {
-  const criteriaHash = getCriteriaHash();
+  const criteria = opts.criteria;
+  const criteriaHash = getCriteriaHash(criteria);
   const results: MatchResult[] = [];
   let totalCost = 0;
 
@@ -153,7 +164,12 @@ export async function matchListings(
     );
 
     try {
-      const batchResults = await matchBatch(batch, opts?.runId ?? null);
+      const { results: batchResults, costUsd } = await matchBatch(
+        batch,
+        criteria,
+        opts.runId ?? null
+      );
+      totalCost += costUsd;
 
       for (const result of batchResults) {
         results.push(result);
@@ -174,7 +190,7 @@ export async function matchListings(
     }
   }
 
-  const minScore = opts?.minScore ?? 60;
+  const minScore = opts.minScore ?? 60;
   const matches = results.filter((r) => r.score >= minScore);
   console.log(
     `[matcher] ${matches.length}/${results.length} listings scored >= ${minScore}, total cost: $${totalCost.toFixed(4)}`
