@@ -25,13 +25,19 @@ export async function scrapeWillhaben(
 ): Promise<ScrapeResult> {
   const { url, jobId, maxPages, maxDetails, signal } = opts;
 
+  // Previews are inserted before detail pages are fetched, so this is the only
+  // place a listing can be seen for the first time. Counting "new" at the
+  // detail-upsert stage instead would always report zero.
+  let newCount = 0;
+
   const previews = await scrapeAllListPages(url, {
     maxPages,
     signal,
     batchSize: 25,
     onBatch: async (batch) => {
       for (const p of batch) {
-        await upsertPreview(p, jobId);
+        const inserted = await upsertPreview(p, jobId);
+        if (inserted) newCount++;
       }
     },
   });
@@ -75,7 +81,6 @@ export async function scrapeWillhaben(
   }
 
   const listings: WillhabenListing[] = [];
-  let newCount = 0;
   let failures = 0;
   const delayMs = 2000;
 
@@ -87,11 +92,10 @@ export async function scrapeWillhaben(
       const listing = await scrapeDetailPage(preview, signal);
       listings.push(listing);
 
-      const isNew = await upsertListing(listing, jobId);
-      if (isNew) newCount++;
+      await upsertListing(listing, jobId);
 
       console.log(
-        `[willhaben] ${i + 1}/${toScrape.length} ${isNew ? "NEW" : "UPD"} | €${listing.price ?? "?"} | ${listing.title?.substring(0, 50)}`
+        `[willhaben] ${i + 1}/${toScrape.length} DETAIL | €${listing.price ?? "?"} | ${listing.title?.substring(0, 50)}`
       );
     } catch (err) {
       failures++;
@@ -111,7 +115,7 @@ export async function scrapeWillhaben(
   const complete = !signal?.aborted && failures === 0;
 
   console.log(
-    `[willhaben] Complete: ${listings.length} detail-scraped, ${newCount} new, ${listings.length - newCount} updated, ${failures} failed`
+    `[willhaben] Complete: ${previews.length} seen, ${newCount} new, ${listings.length} detail-scraped, ${failures} failed`
   );
 
   return {
