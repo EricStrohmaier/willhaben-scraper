@@ -4,7 +4,13 @@ import { migrate } from "./db/migrate.js";
 import { getActiveListings, getRecentRuns, getTotalLlmCost, getLlmCallsForRun, finishRun } from "./db/queries.js";
 import { getUnnotifiedMatches } from "./db/queries.js";
 import { closeLocalBrowser } from "./lib/browser.js";
-import { SEARCH_URLS } from "./config/urls.js";
+import {
+  getEnabledJobs,
+  getJob,
+  resolveJob,
+  JOBS,
+  type SearchJob,
+} from "./config/jobs.js";
 
 async function main() {
   const command = process.argv[2];
@@ -14,11 +20,31 @@ async function main() {
     case "scrape":
     case "run": {
       const urls = args.filter((a) => !a.startsWith("--"));
-      const searchUrls = urls.length > 0 ? urls : SEARCH_URLS;
-      const maxPages = parseInt(
-        args.find((a) => a.startsWith("--pages="))?.split("=")[1] ?? "10",
-        10
-      );
+      const jobFilter = args.find((a) => a.startsWith("--job="))?.split("=")[1];
+      const pagesArg = args.find((a) => a.startsWith("--pages="))?.split("=")[1];
+      const maxPages = pagesArg ? parseInt(pagesArg, 10) : undefined;
+
+      // Explicit URLs win; otherwise run the configured jobs (optionally filtered).
+      let targetJobs: SearchJob[];
+      if (urls.length > 0) {
+        targetJobs = urls.map((u) => resolveJob(u));
+      } else if (jobFilter) {
+        const job = getJob(jobFilter);
+        if (!job) {
+          console.error(
+            `Unknown job "${jobFilter}". Available: ${JOBS.map((j) => j.id).join(", ")}`
+          );
+          process.exit(1);
+        }
+        targetJobs = [job];
+      } else {
+        targetJobs = getEnabledJobs();
+      }
+
+      if (targetJobs.length === 0) {
+        console.error("No enabled jobs to run. Check src/config/jobs.ts");
+        process.exit(1);
+      }
       const skipMatch = args.includes("--no-match");
       const skipNotify = args.includes("--no-notify");
 
@@ -75,11 +101,20 @@ async function main() {
       process.on("SIGINT", onSignal);
       process.on("SIGTERM", onSignal);
 
-      for (const url of searchUrls) {
+      console.log(
+        `Running ${targetJobs.length} job(s): ${targetJobs.map((j) => j.id).join(", ")}\n`
+      );
+
+      const summary: Array<{ job: string; status: string; found: number; matches: number }> = [];
+
+      for (const job of targetJobs) {
         if (ac.signal.aborted) break;
-        console.log(`Running pipeline: ${url} (max ${maxPages} pages)`);
+        pipelineFinished = false;
+        console.log(
+          `── ${job.name} (${job.id}) ── ${job.urls.length} URL(s)`
+        );
         const result = await runPipeline({
-          url,
+          job,
           maxPages,
           signal: ac.signal,
           skipMatch: command === "scrape" || skipMatch,
@@ -87,7 +122,20 @@ async function main() {
           onRunCreated: (id) => { currentRunId = id; },
         });
         pipelineFinished = true;
-        console.log("\nResult:", JSON.stringify(result, null, 2));
+        summary.push({
+          job: job.id,
+          status: result.status,
+          found: result.listingsFound,
+          matches: result.matchesFound,
+        });
+        console.log("\nResult:", JSON.stringify(result, null, 2), "\n");
+      }
+
+      console.log("\n=== Summary ===");
+      for (const s of summary) {
+        console.log(
+          `  ${s.job.padEnd(12)} ${s.status.padEnd(10)} ${s.found} found, ${s.matches} matches`
+        );
       }
 
       if (keepAlive) clearInterval(keepAlive);
@@ -98,13 +146,27 @@ async function main() {
 
     case "listings": {
       await migrate();
-      const listings = await getActiveListings();
-      console.log(`\nActive listings: ${listings.length}\n`);
+      const jobFilter = args.find((a) => a.startsWith("--job="))?.split("=")[1];
+      const listings = await getActiveListings(jobFilter);
+      console.log(
+        `\nActive listings${jobFilter ? ` for job "${jobFilter}"` : ""}: ${listings.length}\n`
+      );
       for (const l of listings) {
         console.log(
-          `  ${l.id} | €${l.price ?? "?"} | ${l.size_m2 ?? "?"}m² | ${l.rooms ?? "?"} Zi | ${l.title}`
+          `  [${String(l.job_id ?? "-").padEnd(10)}] ${l.id} | €${l.price ?? "?"} | ${l.size_m2 ?? "?"}m² | ${l.rooms ?? "?"} Zi | ${l.title}`
         );
         console.log(`    ${l.url}`);
+      }
+      break;
+    }
+
+    case "jobs": {
+      console.log(`\nConfigured jobs:\n`);
+      for (const j of JOBS) {
+        console.log(
+          `  ${j.id.padEnd(12)} ${j.enabled ? "enabled " : "disabled"} | cap €${j.softCapEur ?? "none"} | ${j.urls.length} URL(s) | max ${j.maxDetailsPerRun} details/run`
+        );
+        for (const u of j.urls) console.log(`      ${u}`);
       }
       break;
     }
@@ -114,7 +176,7 @@ async function main() {
       const matches = await getUnnotifiedMatches();
       console.log(`\nUnnotified matches: ${matches.length}\n`);
       for (const m of matches) {
-        console.log(`  Score: ${m.score}/100 | ${m.title}`);
+        console.log(`  [${m.job_id ?? "-"}] Score: ${m.score}/100 | ${m.title}`);
         console.log(`    ${m.reasoning}`);
         console.log(`    ${m.url}\n`);
       }
@@ -123,11 +185,12 @@ async function main() {
 
     case "runs": {
       await migrate();
-      const runs = await getRecentRuns();
-      console.log(`\nRecent runs:\n`);
+      const jobFilter = args.find((a) => a.startsWith("--job="))?.split("=")[1];
+      const runs = await getRecentRuns(10, jobFilter);
+      console.log(`\nRecent runs${jobFilter ? ` for job "${jobFilter}"` : ""}:\n`);
       for (const r of runs) {
         console.log(
-          `  #${r.id} | ${r.status} | ${r.listings_found} found | ${r.new_listings} new | ${r.matches_found} matches | ${r.started_at}`
+          `  #${r.id} | ${String(r.job_id ?? "-").padEnd(12)} | ${r.status} | ${r.listings_found} found | ${r.new_listings} new | ${r.matches_found} matches | ${r.started_at}`
         );
       }
       break;
@@ -167,6 +230,7 @@ Usage: tsx src/cli.ts <command> [options]
 Commands:
   scrape [url...]       Scrape listings only (no matching)
   run [url...]          Full pipeline: scrape + match + notify
+  jobs                  Show configured search jobs
   listings              Show active listings in DB
   matches               Show unnotified matches
   runs                  Show recent pipeline runs
@@ -174,12 +238,13 @@ Commands:
   migrate               Run database migrations
 
 Options:
-  --pages=N             Max pages to scrape (default: 10)
+  --job=<id>            Run/filter a single job instead of all enabled ones
+  --pages=N             Override the job's maxPages
   --no-match            Skip OpenAI matching
   --no-notify           Skip notifications
 
-Default URLs (from config/urls.ts):
-${SEARCH_URLS.map((u) => "  " + u).join("\n")}
+Configured jobs (from config/jobs.ts):
+${JOBS.map((j) => `  ${j.id.padEnd(12)} ${j.enabled ? "enabled" : "disabled"}  ${j.urls.length} URL(s)`).join("\n")}
       `);
   }
 

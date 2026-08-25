@@ -16,7 +16,12 @@ import { hasTurso } from "./db/turso.js";
 import { getActiveListings, getRecentRuns, getUnnotifiedMatches } from "./db/queries.js";
 import { runPipeline } from "./pipeline.js";
 import { hasOpenAI } from "./lib/matcher.js";
-import { SEARCH_URLS } from "./config/urls.js";
+import {
+  getEnabledJobs,
+  getJob,
+  resolveJob,
+  type SearchJob,
+} from "./config/jobs.js";
 
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const API_KEY = process.env.API_KEY || "";
@@ -334,7 +339,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     let urls: string[] = [];
-    let maxPages = 10;
+    let jobIds: string[] = [];
+    let maxPages: number | undefined;
 
     try {
       const body = await parseBody(req);
@@ -342,26 +348,53 @@ const server = http.createServer(async (req, res) => {
         const parsed = JSON.parse(body);
         if (parsed.url) urls = [parsed.url];
         if (parsed.urls) urls = parsed.urls;
+        if (parsed.job) jobIds = [parsed.job];
+        if (parsed.jobs) jobIds = parsed.jobs;
         if (parsed.maxPages) maxPages = parsed.maxPages;
       }
     } catch {
       /* use defaults */
     }
 
-    if (urls.length === 0) urls = SEARCH_URLS;
+    // Explicit URLs win, then explicit job ids, then every enabled job.
+    let targetJobs: SearchJob[];
+    if (urls.length > 0) {
+      targetJobs = urls.map((u) => resolveJob(u));
+    } else if (jobIds.length > 0) {
+      const unknown = jobIds.filter((id) => !getJob(id));
+      if (unknown.length > 0) {
+        return json(res, 400, { error: `Unknown job(s): ${unknown.join(", ")}` });
+      }
+      targetJobs = jobIds.map((id) => getJob(id)!);
+    } else {
+      targetJobs = getEnabledJobs();
+    }
+
+    if (targetJobs.length === 0) {
+      return json(res, 400, { error: "No enabled jobs configured" });
+    }
 
     activeJobs++;
     const controller = new AbortController();
-    const key = jobKey("pipeline", urls[0]);
-    activeJobMap.set(key, { controller, scraper: "pipeline", url: urls.join(", "), startedAt: Date.now() });
+    const key = jobKey("pipeline", targetJobs[0].urls[0]);
+    activeJobMap.set(key, {
+      controller,
+      scraper: "pipeline",
+      url: targetJobs.flatMap((j) => j.urls).join(", "),
+      startedAt: Date.now(),
+    });
 
-    json(res, 202, { accepted: true, message: `Pipeline started for ${urls.length} URL(s)` });
+    json(res, 202, {
+      accepted: true,
+      jobs: targetJobs.map((j) => j.id),
+      message: `Pipeline started for ${targetJobs.length} job(s)`,
+    });
 
     (async () => {
-      for (const targetUrl of urls) {
+      for (const job of targetJobs) {
         if (controller.signal.aborted) break;
-        const result = await runPipeline({ url: targetUrl, maxPages, signal: controller.signal });
-        console.log(`[pipeline] Complete for ${targetUrl}:`, result);
+        const result = await runPipeline({ job, maxPages, signal: controller.signal });
+        console.log(`[pipeline] Complete for job ${job.id}:`, result);
       }
     })()
       .catch((err) => {

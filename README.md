@@ -7,15 +7,43 @@ Currently ships with a **Willhaben apartment scraper** for monitoring rental lis
 ## How It Works
 
 ```
-Search URL ──► List Scraper ──► Detail Scraper ──► Database ──► OpenAI Matcher ──► Notification
-                (pagination)     (each listing)     (Turso)      (gpt-4o-mini)      (webhook)
+Job (1..n URLs) ──► List Scraper ──► Detail Scraper ──► Database ──► OpenAI Matcher ──► Notification
+                     (pagination)     (each listing)     (Turso)      (gpt-4o-mini)      (webhook)
 ```
 
 1. **Scrape listing pages** — Puppeteer navigates willhaben search results, handles pagination, extracts all listing previews
 2. **Scrape detail pages** — Visits each individual listing to extract full info (description, price breakdown, equipment, images, contact)
 3. **Store in database** — Upserts into Turso (remote) or local SQLite. Tracks new vs. updated listings, marks disappeared ones as inactive
-4. **Match via OpenAI** — New listings are scored against your criteria using gpt-4o-mini. Criteria are fully customizable
+4. **Match via OpenAI** — New listings are scored against that job's criteria using gpt-4o-mini
 5. **Notify** — Matching listings trigger a webhook notification (Slack, Discord, email, etc.)
+
+## Jobs
+
+A **job** is one search: a set of willhaben URLs plus the criteria used to score
+what they return. Jobs are defined in `src/config/jobs.ts` and run independently
+— each has its own criteria, budget, and notifications.
+
+```ts
+{
+  id: "vienna",                  // stable slug, stored on every listing
+  name: "Vienna (6th/7th/8th)",
+  urls: [ ... ],                 // any number of willhaben search URLs
+  enabled: true,
+  softCapEur: 1400,              // listings above this are scored down, not excluded
+  maxPages: 5,                   // search-result pages per URL
+  maxDetailsPerRun: 90,          // detail-page cap per run, shared across the job's URLs
+  locationGuidance: "...",       // appended to the shared criteria
+}
+```
+
+Every listing and run row is tagged with its `job_id`. This scoping matters:
+without it, each job's "mark absent listings inactive" sweep would deactivate
+every other job's listings on every run, and each job would spend tokens
+re-scoring the other's listings against its own criteria.
+
+`maxDetailsPerRun` bounds the slowest part of the pipeline (~2-4s per detail
+page). Listings beyond the cap stay in the DB as previews and are picked up on
+the next run, so a broad search URL degrades gracefully instead of timing out.
 
 ## Project Structure
 
@@ -24,6 +52,8 @@ src/
 ├── server.ts                      # HTTP API server
 ├── cli.ts                         # CLI for manual runs
 ├── pipeline.ts                    # Full pipeline orchestrator (scrape → match → notify)
+├── config/
+│   └── jobs.ts                    # Search jobs: URLs, criteria, budgets
 ├── lib/
 │   ├── browser.ts                 # Puppeteer singleton (local + remote Bright Data)
 │   ├── fetch-page.ts              # 3-tier fetching (got-scraping → Puppeteer → remote)
@@ -62,23 +92,30 @@ npm start
 ## CLI Usage
 
 ```bash
-# Scrape listings only (no AI matching)
+# Scrape listings only (no AI matching), all enabled jobs
 npm run scrape
-npm run scrape -- "https://www.willhaben.at/iad/immobilien/mietwohnungen/tirol/innsbruck?rows=90"
+npm run scrape -- "https://www.willhaben.at/iad/immobilien/mietwohnungen/wien?rows=90"
 
-# Full pipeline: scrape + match + notify
+# Full pipeline: scrape + match + notify, all enabled jobs
 npm run run-pipeline
 
-# View stored data
-npx tsx src/cli.ts listings    # Active listings in DB
+# View configuration and stored data
+npx tsx src/cli.ts jobs        # Configured search jobs
+npx tsx src/cli.ts listings    # Active listings in DB (tagged by job)
 npx tsx src/cli.ts matches     # Unnotified matches
 npx tsx src/cli.ts runs        # Recent pipeline runs
 
 # Options
-npm run scrape -- --pages=5        # Limit to 5 pages
-npm run run-pipeline -- --no-match  # Skip OpenAI matching
-npm run run-pipeline -- --no-notify # Skip notifications
+npx tsx src/cli.ts run --job=vienna    # Run one job only
+npx tsx src/cli.ts listings --job=vienna
+npm run scrape -- --pages=5            # Override the job's maxPages
+npm run run-pipeline -- --no-match     # Skip OpenAI matching
+npm run run-pipeline -- --no-notify    # Skip notifications
 ```
+
+Passing a bare URL creates an ad-hoc job whose id is derived from the URL, so
+its listings stay isolated from the configured jobs. If the URL matches a
+configured job, that job is used instead.
 
 ## API Endpoints
 
@@ -86,7 +123,7 @@ npm run run-pipeline -- --no-notify # Skip notifications
 | ---------- | ------------- | ------------------------------------------------------------------ |
 | `GET`      | `/health`     | Service status, active jobs, registered scrapers                   |
 | `GET`      | `/jobs`       | List active scraping jobs                                          |
-| `POST`     | `/run`        | Trigger full pipeline (fire-and-forget, returns 202)               |
+| `POST`     | `/run`        | Trigger full pipeline: `{}` runs all enabled jobs, `{"job":"vienna"}` or `{"jobs":[...]}` runs specific ones, `{"url":"..."}` runs ad-hoc (fire-and-forget, returns 202) |
 | `POST`     | `/scrape`     | Run a specific scraper: `{ "scraper": "willhaben", "url": "..." }` |
 | `GET`      | `/listings`   | All active listings from DB                                        |
 | `GET`      | `/matches`    | Unnotified matches (score >= 60)                                   |

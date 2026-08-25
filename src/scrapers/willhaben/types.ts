@@ -35,7 +35,11 @@ export interface WillhabenListing extends WillhabenListingPreview {
 
 export interface ScrapeOptions {
   url: string;
+  /** Search job this URL belongs to. Every row written is tagged with it. */
+  jobId: string;
   maxPages?: number;
+  /** Cap on detail pages fetched this run. Leftovers are picked up next run. */
+  maxDetails?: number;
   signal?: AbortSignal;
   onlyNew?: boolean;
 }
@@ -45,4 +49,10 @@ export interface ScrapeResult {
   totalFound: number;
   pagesScraped: number;
   newListings: number;
+  /** Detail pages actually attempted this run, successes and failures alike. */
+  detailsAttempted: number;
+  /** IDs seen in this scrape — the caller uses these to mark absent rows inactive. */
+  activeIds: string[];
+  /** True if every page and detail fetch completed without error or abort. */
+  complete: boolean;
 }

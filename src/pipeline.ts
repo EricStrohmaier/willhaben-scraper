@@ -1,12 +1,19 @@
 import { migrate } from "./db/migrate.js";
-import { createRun, finishRun, getUnmatchedListings } from "./db/queries.js";
+import {
+  createRun,
+  finishRun,
+  getUnmatchedListings,
+  markInactiveExcept,
+} from "./db/queries.js";
 import { scrapeWillhaben } from "./scrapers/willhaben/index.js";
 import type { WillhabenListing } from "./scrapers/willhaben/types.js";
 import { matchListings, hasOpenAI, getCriteriaHash } from "./lib/matcher.js";
 import { sendNewMatchNotifications } from "./lib/notify.js";
+import { buildCriteria, type SearchJob } from "./config/jobs.js";
 
 export interface PipelineOptions {
-  url: string;
+  job: SearchJob;
+  /** Overrides the job's own maxPages. Mainly for ad-hoc CLI runs. */
   maxPages?: number;
   signal?: AbortSignal;
   skipMatch?: boolean;
@@ -16,6 +23,7 @@ export interface PipelineOptions {
 
 export interface PipelineResult {
   runId: number;
+  jobId: string;
   listingsFound: number;
   newListings: number;
   matchesFound: number;
@@ -28,32 +36,69 @@ export async function runPipeline(
   opts: PipelineOptions
 ): Promise<PipelineResult> {
   const start = Date.now();
+  const job = opts.job;
 
   await migrate();
 
-  const runId = await createRun();
+  const runId = await createRun(job.id);
   opts.onRunCreated?.(runId);
-  console.log(`[pipeline] Run #${runId} started`);
+  console.log(`[pipeline] Run #${runId} started for job "${job.id}"`);
 
   const stats = { listingsFound: 0, newListings: 0, matchesFound: 0 };
   let status: "completed" | "cancelled" | "error" = "completed";
   let errorMsg: string | undefined;
 
   try {
-    const scrapeResult = await scrapeWillhaben({
-      url: opts.url,
-      maxPages: opts.maxPages,
-      signal: opts.signal,
-    });
+    // Scrape every URL belonging to this job, pooling the IDs so the
+    // inactive sweep below sees the job's full result set at once.
+    const activeIds: string[] = [];
+    let allComplete = true;
+    // Shared across the job's URLs, not per URL — otherwise a job with 3 URLs
+    // would fetch 3x the intended number of detail pages and risk the timeout.
+    let detailBudget = job.maxDetailsPerRun;
 
-    stats.listingsFound = scrapeResult.totalFound;
-    stats.newListings = scrapeResult.newListings;
+    for (const url of job.urls) {
+      if (opts.signal?.aborted) break;
 
+      console.log(
+        `[pipeline] Scraping ${url} (detail budget left: ${detailBudget})`
+      );
+      const scrapeResult = await scrapeWillhaben({
+        url,
+        jobId: job.id,
+        maxPages: opts.maxPages ?? job.maxPages,
+        maxDetails: detailBudget,
+        signal: opts.signal,
+      });
+
+      stats.listingsFound += scrapeResult.totalFound;
+      stats.newListings += scrapeResult.newListings;
+      detailBudget = Math.max(0, detailBudget - scrapeResult.detailsAttempted);
+      // Keep walking the remaining URLs even at budget 0: previews are what
+      // make activeIds complete, and an incomplete set breaks the sweep below.
+      activeIds.push(...scrapeResult.activeIds);
+      if (!scrapeResult.complete) allComplete = false;
+    }
+
+    // Only sweep when the job's whole result set was collected cleanly.
+    // A partial set would wrongly deactivate listings that are still live.
     if (opts.signal?.aborted) {
       status = "cancelled";
       errorMsg = "Cancelled by user";
-    } else if (!opts.skipMatch && hasOpenAI()) {
-      const unmatchedRows = await getUnmatchedListings(getCriteriaHash());
+    } else if (allComplete && activeIds.length > 0) {
+      await markInactiveExcept(activeIds, job.id);
+    } else if (!allComplete) {
+      console.log(
+        `[pipeline] Skipping inactive sweep for "${job.id}" — scrape was incomplete`
+      );
+    }
+
+    if (status !== "cancelled" && !opts.skipMatch && hasOpenAI()) {
+      const criteria = buildCriteria(job);
+      const unmatchedRows = await getUnmatchedListings(
+        getCriteriaHash(criteria),
+        job.id
+      );
       const toMatch: WillhabenListing[] = unmatchedRows.map((r) => ({
         id: String(r.id),
         url: String(r.url),
@@ -91,6 +136,7 @@ export async function runPipeline(
           `[pipeline] Matching ${toMatch.length} unmatched listings with OpenAI...`
         );
         const results = await matchListings(toMatch, {
+          criteria,
           signal: opts.signal,
           runId,
         });
@@ -121,11 +167,12 @@ export async function runPipeline(
     );
 
     console.log(
-      `[pipeline] Run #${runId} ${status}: ${stats.listingsFound} found, ${stats.newListings} new, ${stats.matchesFound} matches (${duration}ms)`
+      `[pipeline] Run #${runId} (${job.id}) ${status}: ${stats.listingsFound} found, ${stats.newListings} new, ${stats.matchesFound} matches (${duration}ms)`
     );
 
     return {
       runId,
+      jobId: job.id,
       ...stats,
       duration,
       status,
