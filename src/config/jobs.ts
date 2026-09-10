@@ -46,29 +46,29 @@ Strong preferences:
 `.trim();
 
 export const JOBS: SearchJob[] = [
-  {
-    id: "innsbruck",
-    name: "Innsbruck",
-    urls: [
-      "https://www.willhaben.at/iad/immobilien/mietwohnungen/tirol/innsbruck?rows=90",
-    ],
-    enabled: true,
-    // ── ADJUST ME ──────────────────────────────────────────────────────────
-    softCapEur: 1400,
-    // ───────────────────────────────────────────────────────────────────────
-    maxPages: 10,
-    maxDetailsPerRun: 120,
-    locationGuidance: `
-- Anywhere in Innsbruck is acceptable — location is not a dealbreaker.
-- Slight preference for the area behind the main train station, the far side
-  of the Inn, Höttinger Au, and Mariahilfstraße.
-`.trim(),
-  },
+  //   {
+  //     id: "innsbruck",
+  //     name: "Innsbruck",
+  //     urls: [
+  //       "https://www.willhaben.at/iad/immobilien/mietwohnungen/tirol/innsbruck?rows=90",
+  //     ],
+  //     enabled: true,
+  //     // ── ADJUST ME ──────────────────────────────────────────────────────────
+  //     softCapEur: 1400,
+  //     // ───────────────────────────────────────────────────────────────────────
+  //     maxPages: 10,
+  //     maxDetailsPerRun: 120,
+  //     locationGuidance: `
+  // - Anywhere in Innsbruck is acceptable — location is not a dealbreaker.
+  // - Slight preference for the area behind the main train station, the far side
+  //   of the Inn, Höttinger Au, and Mariahilfstraße.
+  // `.trim(),
+  //   },
   {
     id: "vienna",
     name: "Vienna (6th/7th/8th)",
     urls: [
-      "https://www.willhaben.at/iad/immobilien/mietwohnungen/wien/wien-1060-mariahilf?rows=90",
+      "https://www.willhaben.at/iad/immobilien/mietwohnungen/wien/wien-1040-wieden?rows=90",
       "https://www.willhaben.at/iad/immobilien/mietwohnungen/wien/wien-1070-neubau?rows=90",
       "https://www.willhaben.at/iad/immobilien/mietwohnungen/wien/wien-1080-josefstadt?rows=90",
     ],
@@ -79,7 +79,7 @@ export const JOBS: SearchJob[] = [
     maxPages: 5,
     maxDetailsPerRun: 90,
     locationGuidance: `
-- The target area is the inner belt: 1060 Mariahilf, 1070 Neubau, 1080
+- The target area is the inner belt: 1040 Wieden, 1070 Neubau, 1080
   Josefstadt. These are the districts we actually want — score them highest.
 - Directly adjacent inner districts (1010, 1040, 1050, 1090) are acceptable
   but should score somewhat lower.
@@ -98,7 +98,7 @@ export function buildCriteria(job: SearchJob): string {
     sections.push(
       `Budget:\n- Target rent is up to €${job.softCapEur} per month.\n` +
         `- Score listings above that down in proportion to how far over they are, ` +
-        `but do NOT exclude them. An excellent listing slightly over budget can still score well.`
+        `but do NOT exclude them. An excellent listing slightly over budget can still score well.`,
     );
   }
 
